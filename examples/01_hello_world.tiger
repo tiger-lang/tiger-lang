@@ -1,0 +1,7 @@
+use (
+	io.print_line
+)
+
+func main() {
+	print_line("hello world")
+}

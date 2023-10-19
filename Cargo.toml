@@ -1,0 +1,11 @@
+[package]
+name = "tiger-lang"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+wasm-encoder = "0.31.1"
+wasmparser = "0.111.0"
+wasmtime = "12.0.0"

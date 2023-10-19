@@ -1,0 +1,18 @@
+use (
+	io.print_line
+)
+
+func main() {
+	var (
+		x text = "123"
+		y bool = false
+		z int = 1
+	)
+
+	print_line(x)
+	print_line(y)
+	print_line(z)
+
+	x = "456"
+	print_line(x)
+}

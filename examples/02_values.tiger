@@ -1,0 +1,11 @@
+use (
+	io.print_line
+)
+
+func main() {
+	print_line(10)
+	print_line(10.0)
+	print_line(true)
+	print_line(false)
+	print_line("abc")
+}
