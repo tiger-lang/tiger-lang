@@ -27,10 +27,6 @@ impl AllUTF8CharReader {
         if res == None {
             let codepoint = 0x80 + (self.pos - 0x80) / 2;
             if codepoint <= 0x7ff {
-                println!(
-                    "Reading byte {:x}, expecting 2-byte codepoint {:x}",
-                    self.pos, codepoint
-                );
                 // 2-byte characters
                 let b1 = 0b11000000 | ((codepoint >> 6) as u8 & 0b00011111);
                 let b2 = 0b10000000 | ((codepoint >> 0) as u8 & 0b00111111);
@@ -48,10 +44,6 @@ impl AllUTF8CharReader {
                 codepoint = 0xe000;
             }
             if codepoint <= 0xffff {
-                println!(
-                    "Reading byte {:x}, expecting 3-byte codepoint {:x} {:b}",
-                    self.pos, codepoint, codepoint
-                );
                 if codepoint < 0xd800 && codepoint < 0xdfff {}
 
                 // 3-byte characters
@@ -73,10 +65,6 @@ impl AllUTF8CharReader {
             if codepoint > 0x10ffff {
                 return None; // All valid codepoints have been read
             }
-            println!(
-                "Reading byte {:x}, expecting 4-byte codepoint {:x} {:b}",
-                self.pos, codepoint, codepoint
-            );
 
             let b1 = 0b11110000 | ((codepoint >> 18) as u8 & 0b00000111);
             let b2 = 0b10000000 | ((codepoint >> 12) as u8 & 0b00111111);
@@ -92,7 +80,6 @@ impl AllUTF8CharReader {
         }
 
         self.pos += 1;
-        println!("returning {:x} ({:b})", res.unwrap(), res.unwrap());
         return res;
     }
 }
@@ -114,7 +101,7 @@ fn read_char_test() {
     let mut r = AllUTF8CharReader { pos: 0 };
 
     for codepoint in 0..0x11000 {
-        println!("attempting to read codepoint {:x}", codepoint);
+        //println!("attempting to read codepoint {:x}", codepoint);
         let actual_char = read_char(&mut r);
         match char::from_u32(codepoint) {
             Some(c) => {

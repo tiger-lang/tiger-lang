@@ -1,4 +1,7 @@
-use std::io::{self, Read};
+use std::{
+    collections::VecDeque,
+    io::{self, Read},
+};
 
 pub struct Token {
     pub column: usize,
@@ -8,13 +11,12 @@ pub struct Token {
     pub value: TokenValue,
 }
 
-pub enum PrefixUnaryOperator {
+pub enum UnaryOperator {
     Not,
-}
-pub enum SuffixUnaryOperator {
     Increment,
     Decrement,
 }
+
 pub enum BinaryOperator {
     Add,
     Subtract,
@@ -26,6 +28,17 @@ pub enum BinaryOperator {
     Xor,
     LogicalOr,
     LogicalAnd,
+    ShiftLeft,
+    ShiftRight
+}
+
+pub enum ComparisonOperator {
+    Equals,
+    GreaterThan,
+    LessThan,
+    GreaterThanOrEquals,
+    LessThanOrEquals,
+    NotEquals,
 }
 
 pub enum AssignOperator {
@@ -36,15 +49,15 @@ pub enum AssignOperator {
 pub enum TokenValue {
     Identifier(String),
 
-    ConstUnsignedInteger(u64),
-    ConstSignedInteger(i64),
-    ConstFloatingPoint(f64),
-    ConstString(String),
-    ConstBool(bool),
+    IntegerLiteral(i128),
+    FloatingPointLiteral(f64),
+    StringLiteral(String),
+    CharLiteral(char),
+    BoolLiteral(bool),
 
-    PrefixUnaryOperator(PrefixUnaryOperator),
-    SuffixUnaryOperator(SuffixUnaryOperator),
+    UnaryOperator(UnaryOperator),
     BinaryOperator(BinaryOperator),
+    Comparison(ComparisonOperator),
     Assignment(AssignOperator),
 
     OpenParen,
@@ -63,12 +76,14 @@ pub enum TokenValue {
     KeywordFor,
     KeywordLoop,
     KeywordWhile,
+    KeywordVar,
+    KeywordConst,
+    KeywordUse,
 }
-
-impl Token {}
 
 pub enum ErrorKind {
     InvalidInput,
+    Internal,
     IOError(io::Error),
 }
 
@@ -85,27 +100,10 @@ pub struct TokenStream<R: Read> {
     stream: R,
     stream_column: usize,
     stream_line: usize,
-    leftover_char: Option<char>,
+    lookahead_buf: VecDeque<char>,
 
-    token_buf: Vec<char>,
     token_column: usize,
     token_line: usize,
-
-    state: TokenizerState,
-    in_escape_sequence: bool,
-}
-
-/// Represents the internal state of the tokenizer state machine
-enum TokenizerState {
-    Standard,
-    Identifier,
-    String,
-    Number,
-    FloatingPointNumber,
-    Character,
-    SingleLineComment,
-    MultiLineComment,
-    Operator,
 }
 
 impl<R: Read> TokenStream<R> {
@@ -121,13 +119,33 @@ impl<R: Read> TokenStream<R> {
             stream: r,
             stream_column: 1,
             stream_line: 1,
-            leftover_char: None,
-            token_buf: vec![],
             token_column: 1,
             token_line: 1,
-            state: TokenizerState::Standard,
-            in_escape_sequence: false,
+            lookahead_buf: VecDeque::new(),
         };
+    }
+
+    fn next_char(&mut self) -> Result<Option<char>, io::Error> {
+        let res: Result<Option<char>, io::Error>;
+
+        if !self.lookahead_buf.is_empty() {
+            res = Ok(self.lookahead_buf.pop_front());
+        } else {
+            res = read_char(&mut self.stream);
+        }
+
+        match res {
+            Ok(Some('\n')) => {
+                self.stream_column = 1;
+                self.stream_line += 1;
+            }
+            Ok(Some(_)) => {
+                self.stream_column += 1;
+            }
+            _ => (),
+        }
+
+        return res;
     }
 
     /// Reads the next token from the stream.
@@ -135,166 +153,429 @@ impl<R: Read> TokenStream<R> {
     /// Returns Ok(None) when EOF has been reached without errors.
     pub fn next(&mut self) -> Result<Option<Token>, Error> {
         loop {
-            if self.leftover_char.is_some() {
-                match self.consume_character(self.leftover_char.unwrap()) {
-                    Ok(_) => todo!(),
-                    Err(_) => todo!(),
+            self.token_column = self.stream_column;
+            self.token_line = self.stream_line;
+
+            let v = match self.next_char() {
+                Ok(None) => return Ok(None), // EOF
+                Ok(Some(c)) if c.is_whitespace() => continue,
+                Ok(Some(c)) if c == '_' || c.is_alphabetic() => {
+                    self.push_char(c);
+                    return self.read_ident();
+                }
+                Ok(Some(c)) if c.is_numeric() => {
+                    self.push_char(c);
+                    return self.read_number();
+                }
+                Ok(Some('{')) => self.build_token(TokenValue::OpenBrace, "{"),
+                Ok(Some('}')) => self.build_token(TokenValue::CloseBrace, "}"),
+                Ok(Some('[')) => self.build_token(TokenValue::OpenBracket, "["),
+                Ok(Some(']')) => self.build_token(TokenValue::CloseBracket, "]"),
+                Ok(Some('(')) => self.build_token(TokenValue::OpenParen, "("),
+                Ok(Some(')')) => self.build_token(TokenValue::CloseParen, ")"),
+                Ok(Some(',')) => self.build_token(TokenValue::Comma, ","),
+                Ok(Some('.')) => self.build_token(TokenValue::Dot, "."),
+                Ok(Some('"')) => return self.read_string(),
+                Ok(Some('\'')) => return self.read_char(),
+                Ok(Some(c)) if is_operator(c) => {
+                    self.push_char(c);
+                    return self.read_operator();
+                }
+                Ok(Some(c)) => {
+                    return Err(Error {
+                        message: format!(
+                            "unexpected character '{}' at line {} column {}",
+                            c, self.stream_line, self.stream_column
+                        ),
+                        kind: ErrorKind::InvalidInput,
+                    })
+                }
+                Err(err) => return self.io_error(err),
+            };
+
+            return Ok(Some(v));
+        }
+    }
+
+    fn build_token(&self, value: TokenValue, text: &str) -> Token {
+        Token {
+            column: self.token_column,
+            line: self.token_line,
+            length: text.len(),
+            text: String::from(text),
+            value,
+        }
+    }
+
+    fn read_ident(&mut self) -> Result<Option<Token>, Error> {
+        let mut value = Vec::new();
+
+        loop {
+            match self.next_char() {
+                Ok(None) => break,
+                Err(e) => return self.io_error(e),
+                Ok(Some(c)) => {
+                    if c.is_alphanumeric() || c == '_' {
+                        value.push(c);
+                    } else {
+                        break;
+                    }
                 }
             }
+        }
 
-            match read_char(&mut self.stream) {
-                Ok(None) => return self.finish_token(), // EOL reached, attempt to finalize the current token
-                Ok(Some(c)) => match self.consume_character(c) {
-                    Ok((true, token_complete)) => {
-                        self.stream_column += 1;
-                        if c == '\n' {
-                            self.stream_column = 1;
-                            self.stream_line += 1;
+        let s: String = value.iter().collect();
+
+        if let Some(t) = self.check_keyword(s.as_str()) {
+            return Ok(Some(t));
+        }
+
+        Ok(Some(self.build_token(
+            TokenValue::Identifier(s.clone()),
+            s.as_str(),
+        )))
+    }
+
+    fn check_keyword(&self, s: &str) -> Option<Token> {
+        match s {
+            "if" => Some(self.build_token(TokenValue::KeywordIf, s)),
+            "else" => Some(self.build_token(TokenValue::KeywordElse, s)),
+            "for" => Some(self.build_token(TokenValue::KeywordFor, s)),
+            "loop" => Some(self.build_token(TokenValue::KeywordLoop, s)),
+            "while" => Some(self.build_token(TokenValue::KeywordWhile, s)),
+            "func" => Some(self.build_token(TokenValue::KeywordFunc, s)),
+            "test" => Some(self.build_token(TokenValue::KeywordTest, s)),
+            "var" => Some(self.build_token(TokenValue::KeywordVar, s)),
+            "const" => Some(self.build_token(TokenValue::KeywordConst, s)),
+            "use" => Some(self.build_token(TokenValue::KeywordUse, s)),
+            "true" => Some(self.build_token(TokenValue::BoolLiteral(true), s)),
+            "false" => Some(self.build_token(TokenValue::BoolLiteral(false), s)),
+            _ => None,
+        }
+    }
+
+    fn read_number(&mut self) -> Result<Option<Token>, Error> {
+        let mut base = 10;
+        let mut floating_point = false;
+        let mut value = Vec::new();
+
+        loop {
+            match self.next_char() {
+                Ok(None) => break,
+                Ok(Some(c)) => {
+                    match c {
+                        '-' if value.is_empty() => {
+                            value.push(c);
                         }
-                        if token_complete {
-                            return self.finish_token();
+                        '.' if value.is_empty() => {
+                            if base != 10 || floating_point {
+                                return self.error(
+                                    "unexpected character '.' in a number literal".to_string(),
+                                );
+                            }
+                            floating_point = true;
+                        }
+                        'x' if value.is_empty() => base = 16,
+                        'b' if value.is_empty() => base = 2,
+                        'o' if value.is_empty() => base = 8,
+                        c if is_numeric(c, base) => value.push(c),
+                        _ => {
+                            if c.is_alphanumeric() || c == '_' {
+                                return self.error(format!(
+                                    "unexpected character '{}' in a number literal",
+                                    c
+                                ));
+                            }
+                            // Non-numeric character that's not alphanumeric - assumed to be the start of the next token
+                            self.push_char(c);
+                            break;
                         }
                     }
-                    Ok((false, true)) => {
-                        self.leftover_char = Some(c);
-                        return self.finish_token();
-                    }
-                    Ok((false, false)) => {
-                        panic!("tokenizer did not consume character {} and also didn't complete a token - this is an infinite loop", c);
-                    }
-                    Err(e) => return Err(e),
-                },
-                Err(err) => {
-                    return Err(self.io_error(err));
+                }
+                Err(e) => return self.io_error(e),
+            }
+        }
+
+        if value.last().is_some_and(|c| *c == '.') {
+            // A char at the end of a number is interpreted as a dot token, not part of a floating point number
+            value.pop();
+            self.push_char('.');
+            floating_point = false;
+        }
+
+        let s: String = value.iter().collect();
+        if floating_point {
+            match s.parse::<f64>() {
+                Ok(fp) => {
+                    return Ok(Some(
+                        self.build_token(TokenValue::FloatingPointLiteral(fp), s.as_str()),
+                    ))
+                }
+                Err(e) => {
+                    return self.internal_error(format!(
+                        "internal error while reading number: {}",
+                        e.to_string()
+                    ))
                 }
             }
         }
-    }
 
-    /// finish_token finalizes the current token in self.token_buf.
-    ///
-    /// Returns Ok(None) if self.token_buf is empty
-    fn finish_token(&mut self) -> Result<Option<Token>, Error> {
-        if self.in_escape_sequence {
-            return Err(
-                self.error("unexpected end of token while processing escape sequence".to_string())
-            );
-        }
-        // TODO: process current token
-        self.state = TokenizerState::Standard;
-        todo!()
-    }
-
-    /// consume_character takes a character and runs it through the tokenizer.
-    ///
-    /// Returns `Ok(consumed, token_completed)` on success
-    /// consumed indicates whether or not the character was consumed as part of the current token,
-    /// token_completed indicates the end of the current token was reached.
-    ///
-    /// Returns `Err(Error)` when the provided character was invalid in the current context.
-    fn consume_character(&mut self, c: char) -> Result<(bool, bool), Error> {
-        match self.state {
-            TokenizerState::Standard => {
-                let mut token_complete = false;
-                match c {
-                    c if c == '_' || c.is_alphabetic() => {
-                        self.state = TokenizerState::Identifier;
-                    }
-                    c if c.is_numeric() => self.state = TokenizerState::Number,
-                    c if c.is_whitespace() => return Ok((true, false)),
-                    '+' | '-' | '*' | '/' | '%' | '^' | '&' | '|' => {
-                        self.state = TokenizerState::Operator;
-                    }
-                    '=' | '!' | '{' | '}' | '[' | ']' | '(' | ')' | ',' | '.' => {
-                        token_complete = true;
-                    }
-                    '\'' => self.state = TokenizerState::Character,
-                    '"' => self.state = TokenizerState::String,
-                    c => {
-                        return Err(Error {
-                            message: format!(
-                                "unexpected character '{}' at line {} column {}",
-                                c, self.stream_line, self.stream_column
-                            ),
-                            kind: ErrorKind::InvalidInput,
-                        })
-                    }
-                };
-                self.token_buf.push(c);
-                self.token_column = self.stream_column;
-                self.token_line = self.stream_line;
-                Ok((true, token_complete))
+        let value_string: String = value.into_iter().collect();
+        match i128::from_str_radix(&value_string, base) {
+            Ok(i) => {
+                return Ok(Some(
+                    self.build_token(TokenValue::IntegerLiteral(i), s.as_str()),
+                ))
             }
-            TokenizerState::Identifier => self.consume_character_ident(c),
-            TokenizerState::String => self.consume_character_string(c),
-            TokenizerState::Number => todo!(),
-            TokenizerState::FloatingPointNumber => todo!(),
-            TokenizerState::Character => todo!(),
-            TokenizerState::SingleLineComment => todo!(),
-            TokenizerState::MultiLineComment => todo!(),
-            TokenizerState::Operator => todo!(),
-        }
-    }
-
-    fn consume_character_ident(&mut self, c: char) -> Result<(bool, bool), Error> {
-        match c {
-            c if c.is_alphanumeric() || c == '_' => {
-                self.token_buf.push(c);
-                Ok((true, false))
+            Err(e) => {
+                return self.internal_error(format!(
+                    "internal error while reading number: {}",
+                    e.to_string()
+                ))
             }
-            '=' | '!' | '{' | '}' | '[' | ']' | '(' | ')' | ',' | '.' => Ok((false, true)),
-            c if c.is_whitespace() => Ok((true, true)),
-            _ => Err(self.error(format!("unexpected character '{}' in identifier", c))),
         }
     }
 
-    fn consume_character_string(&mut self, c: char) -> Result<(bool, bool), Error> {
-        if self.in_escape_sequence {
-            match c {
-                't' => self.token_buf.push('\t'),
-                'n' => self.token_buf.push('\n'),
+    fn read_string(&mut self) -> Result<Option<Token>, Error> {
+        let mut buf = Vec::new();
+
+        loop {
+            match self.next_char() {
+                Ok(c) => {
+                    if let Some(c) = c {
+                        match c {
+                            '"' => break,
+                            '\\' => match self.read_escape_sequence() {
+                                Ok(c) => buf.push(c),
+                                Err(e) => return Err(e),
+                            },
+                            _ => buf.push(c),
+                        }
+                    } else {
+                        return self
+                            .error("unexpected EOF while reading unterminated string".to_string());
+                    }
+                }
+                Err(e) => return self.io_error(e),
+            }
+        }
+
+        let s: String = buf.iter().collect();
+        Ok(Some(self.build_token(
+            TokenValue::StringLiteral(s.clone()),
+            format!("\"{}\"", s).as_str(),
+        )))
+    }
+
+    fn read_char(&mut self) -> Result<Option<Token>, Error> {
+        let res = match self.next_char() {
+            Ok(Some('\'')) => return self.error("character literal cannot be empty".to_string()),
+            Ok(Some('\\')) => match self.read_escape_sequence() {
+                Ok(c) => c,
+                Err(e) => return Err(e),
+            },
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return self.error("unexpected EOF while reading character literal".to_string())
+            }
+            Err(e) => return self.io_error(e),
+        };
+
+        match self.next_char() {
+            Ok(Some('\'')) => (),
+            Ok(Some(c)) => {
+                return self.error(
+                    "unexpected character '{}': character literals can only contain one character"
+                        .to_string(),
+                )
+            }
+            Ok(None) => {
+                return self.error("unexpected EOF while reading unterminated string".to_string())
+            }
+            Err(e) => return self.io_error(e),
+        };
+
+        Ok(Some(self.build_token(
+            TokenValue::CharLiteral(res),
+            format!("'{}'", res).as_str(),
+        )))
+    }
+
+    fn read_operator(&mut self) -> Result<Option<Token>, Error> {
+        match self.next_char() {
+            Ok(None) => Ok(None),
+            Ok(Some(c1)) => {
+                match c1 {
+                    '=' | '*' | '/' | '%' | '^' | '!' => {
+                        // can be c or c=
+                        let c2 = match self.next_char() {
+                            Ok(v) => v,
+                            Err(e) => return self.io_error(e),
+                        };
+
+                        if let Some(c2) = c2 {
+                            if c2 == '=' {
+                                self.build_operator(format!("{}{}", c1, c2).as_str())
+                            } else {
+                                self.push_char(c2);
+                                self.build_operator(format!("{}", c1).as_str())
+                            }
+                        } else {
+                            self.build_operator(format!("{}", c1).as_str())
+                        }
+                    }
+                    '&' | '|' | '<' | '>' => {
+                        // can be c, cc, c= or cc=
+                        let mut res = format!("{}", c1);
+                        loop {
+                            let c2 = match self.next_char() {
+                                Ok(v) => v,
+                                Err(e) => return self.io_error(e),
+                            };
+
+                            if let Some(c2) = c2 {
+                                match c2 {
+                                    _ if c1 == c2 && res.len() == 1 => {
+                                        res.push(c2);
+                                        continue;
+                                    }
+                                    '=' => {
+                                        res.push(c2);
+                                        break;
+                                    }
+                                    _ => {
+                                        self.push_char(c2);
+                                        break;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        self.build_operator(res.as_str())
+                    }
+                    '+' | '-' => {
+                        // can be c, cc or c=
+                        let c2 = match self.next_char() {
+                            Ok(v) => v,
+                            Err(e) => return self.io_error(e),
+                        };
+
+                        match c2 {
+                            Some(c2) if c2 == c1 || c2 == '=' => {
+                                self.build_operator(format!("{}{}", c1, c2).as_str())
+                            }
+                            Some(_) => {
+                                self.push_char(c2.unwrap());
+                                self.build_operator(format!("{}", c1).as_str())
+                            }
+                            None => self.build_operator(format!("{}", c1).as_str()),
+                        }
+                    }
+                    _ => self.error(format!(
+                        "unexpected character '{}' while reading operator token",
+                        c1
+                    )),
+                }
+            }
+            Err(e) => self.io_error(e),
+        }
+    }
+
+    fn build_operator(&mut self, op: &str) -> Result<Option<Token>, Error> {
+        match op {
+            "+" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::Add), op))),
+            "-" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::Subtract), op))),
+            "*" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::Multiply), op))),
+            "/" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::Divide), op))),
+            "%" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::Modulo), op))),
+            "|" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::BinaryOr), op))),
+            "&" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::BinaryAnd), op))),
+            "^" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::Xor), op))),
+            "||" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::LogicalOr), op))),
+            "&&" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::LogicalAnd), op))),
+            "<<" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::ShiftLeft), op))),
+            ">>" => Ok(Some(self.build_token(TokenValue::BinaryOperator(BinaryOperator::ShiftRight), op))),
+            "==" => Ok(Some(self.build_token(TokenValue::Comparison(ComparisonOperator::Equals), op))),
+            ">" => Ok(Some(self.build_token(TokenValue::Comparison(ComparisonOperator::GreaterThan), op))),
+            "<" => Ok(Some(self.build_token(TokenValue::Comparison(ComparisonOperator::LessThan), op))),
+            ">=" => Ok(Some(self.build_token(TokenValue::Comparison(ComparisonOperator::GreaterThanOrEquals), op))),
+            "<=" => Ok(Some(self.build_token(TokenValue::Comparison(ComparisonOperator::LessThanOrEquals), op))),
+            "!=" => Ok(Some(self.build_token(TokenValue::Comparison(ComparisonOperator::NotEquals), op))),
+            "!" => Ok(Some(self.build_token(TokenValue::UnaryOperator(UnaryOperator::Not), op))),
+            "++" => Ok(Some(self.build_token(TokenValue::UnaryOperator(UnaryOperator::Increment), op))),
+            "--" => Ok(Some(self.build_token(TokenValue::UnaryOperator(UnaryOperator::Decrement), op))),
+            "=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::Assign), op))),
+            "+=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::Add)), op))),
+            "-=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::Subtract)), op))),
+            "*=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::Multiply)), op))),
+            "/=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::Divide)), op))),
+            "%=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::Modulo)), op))),
+            "|=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::BinaryOr)), op))),
+            "&=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::BinaryAnd)), op))),
+            "^=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::Xor)), op))),
+            "||=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::LogicalOr)), op))),
+            "&&=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::LogicalAnd)), op))),
+            "<<=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::ShiftLeft)), op))),
+            ">>=" => Ok(Some(self.build_token(TokenValue::Assignment(AssignOperator::AssignAfter(BinaryOperator::ShiftRight)), op))),
+            _ => self.internal_error(format!("unknown operator string {}", op)),
+        }
+    }
+
+    fn read_escape_sequence(&mut self) -> Result<char, Error> {
+        match self.next_char() {
+            Ok(Some(c)) => match c {
+                'r' => return Ok('\n'),
+                'n' => return Ok('\n'),
+                't' => return Ok('\t'),
+                '\\' | '\'' | '"' => return Ok(c),
+                // TODO: unicode and hex escape codes
                 _ => {
-                    return Err(self.error(format!("unexpected character {} in escape sequence", c)))
+                    return self
+                        .error(format!("invalid character in escape sequence: {}", c))
+                        .map(|_| ' ')
                 }
+            },
+            Ok(None) => {
+                return self
+                    .error("EOF reached while reading escape sequence".to_string())
+                    .map(|_| ' ')
             }
-            self.in_escape_sequence = false;
-            return Ok((true, false));
+            Err(e) => return self.io_error(e).map(|_| ' '),
         }
-        match c {
-            '"' => return Ok((true, true)),
-            '\\' => {
-                self.in_escape_sequence = true;
-            }
-            '\n' => {
-                return Err(
-                    self.error("unexpected unescaped newline inside string constant".to_string())
-                );
-            }
-            _ => {
-                self.token_buf.push(c);
-            }
-        }
-        Ok((true, false))
     }
 
-    fn error(&self, msg: String) -> Error {
-        return Error {
+    fn push_char(&mut self, c: char) {
+        self.lookahead_buf.push_back(c)
+    }
+
+    fn internal_error(&self, msg: String) -> Result<Option<Token>, Error> {
+        return Err(Error {
+            message: format!(
+                "{}:{}:{}: {}",
+                self.stream_path, self.stream_line, self.stream_column, msg
+            ),
+            kind: ErrorKind::Internal,
+        });
+    }
+
+    fn error(&self, msg: String) -> Result<Option<Token>, Error> {
+        return Err(Error {
             message: format!(
                 "{}:{}:{}: {}",
                 self.stream_path, self.stream_line, self.stream_column, msg
             ),
             kind: ErrorKind::InvalidInput,
-        };
+        });
     }
 
-    fn io_error(&self, err: io::Error) -> Error {
-        return Error {
+    fn io_error(&self, err: io::Error) -> Result<Option<Token>, Error> {
+        return Err(Error {
             message: format!(
                 "{}:{}:{}: I/O error",
                 self.stream_path, self.stream_line, self.stream_column,
             ),
             kind: ErrorKind::IOError(err),
-        };
+        });
     }
 }
 
@@ -331,6 +612,14 @@ fn read_char<R: Read>(r: &mut R) -> io::Result<Option<char>> {
             rune[0], rune[1], rune[2], rune[3]
         ),
     ));
+}
+
+fn is_numeric(c: char, base: u32) -> bool {
+    c.to_digit(base).is_some()
+}
+
+fn is_operator(c: char) -> bool {
+    "+-/*%!&|^=<>".contains(c)
 }
 
 #[cfg(test)]
