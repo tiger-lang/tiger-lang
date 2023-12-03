@@ -1,11 +1,29 @@
-use std::{fs, io};
+use std::{
+    fs::{self, File},
+    io,
+};
+
+use crate::tokenizer;
 
 use super::CommandOpts;
 
 fn run_internal(opts: &CommandOpts) -> io::Result<()> {
     for path in &opts.path_specs {
         for entry in fs::read_dir(&path)? {
-            println!("{}", entry?.path().to_string_lossy())
+            let entry = entry?;
+            let path = entry.path().to_string_lossy().to_string();
+            let file = File::open(entry.path())?;
+            let tok = tokenizer::TokenStream::new(file, Some(path));
+
+            for token in tok {
+                match token {
+                    Ok(t) => println!("{:?}", t),
+                    Err(err) => {
+                        println!("{}", err.message);
+                        return Ok(());
+                    }
+                }
+            }
         }
     }
 

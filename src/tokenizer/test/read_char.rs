@@ -110,15 +110,13 @@ fn read_char_test() {
                 assert_eq!(actual_char as u32, c as u32);
             }
             None => match actual_char {
-                Ok(opt_c) => match opt_c {
-                    Some(c) => {
-                        if c as u32 != 0xe000 {
-                            panic!("codepoint {:x} does not return a valid character, but result from stream produced {:x}", codepoint, c as u32)
-                        }
+                Some(Ok(c)) => {
+                    if c as u32 != 0xe000 {
+                        panic!("codepoint {:x} does not return a valid character, but result from stream produced {:x}", codepoint, c as u32)
                     }
-                    None => (),
-                },
-                Err(_) => (),
+                }
+                None => (),
+                Some(Err(_)) => (),
             },
         }
     }
