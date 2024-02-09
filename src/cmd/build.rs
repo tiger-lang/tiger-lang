@@ -12,14 +12,16 @@ fn run_internal(opts: &CommandOpts) -> io::Result<()> {
         for entry in fs::read_dir(&path)? {
             let entry = entry?;
             let path = entry.path().to_string_lossy().to_string();
+            println!("{}", path);
+
             let file = File::open(entry.path())?;
             let tok = tokenizer::TokenStream::new(file, Some(path));
 
             for token in tok {
                 match token {
-                    Ok(t) => println!("{:?}", t),
+                    Ok(t) => println!("\t{:?}", t),
                     Err(err) => {
-                        println!("{}", err.message);
+                        println!("\t{}", err.message);
                         return Ok(());
                     }
                 }

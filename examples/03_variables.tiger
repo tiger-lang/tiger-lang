@@ -15,4 +15,9 @@ func main() {
 
 	x = "456"
 	print_line(x)
+
+	z = z + 123
+	print_line(z)
+	z *= 3
+	print_line(z)
 }

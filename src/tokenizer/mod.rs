@@ -3,23 +3,24 @@ use std::{
     io::{self, Read},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Token {
     pub column: usize,
     pub line: usize,
     pub length: usize,
+    pub path: String,
     pub text: String,
     pub value: TokenValue,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOperator {
     Not,
     Increment,
     Decrement,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryOperator {
     Add,
     Subtract,
@@ -35,7 +36,7 @@ pub enum BinaryOperator {
     ShiftRight,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComparisonOperator {
     Equals,
     GreaterThan,
@@ -45,13 +46,13 @@ pub enum ComparisonOperator {
     NotEquals,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignOperator {
     Assign,
     AssignAfter(BinaryOperator),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenValue {
     Identifier(String),
 
@@ -74,6 +75,7 @@ pub enum TokenValue {
     CloseBracket,
     Dot,
     Comma,
+    Newline,
 
     KeywordFunc,
     KeywordTest,
@@ -85,6 +87,8 @@ pub enum TokenValue {
     KeywordVar,
     KeywordConst,
     KeywordUse,
+    KeywordAs,
+    KeywordReturn,
 }
 
 pub enum ErrorKind {
@@ -96,9 +100,11 @@ pub enum ErrorKind {
 pub struct Error {
     pub message: String,
     pub kind: ErrorKind,
-}
 
-impl Error {}
+    pub line: usize,
+    pub column: usize,
+    pub source: String,
+}
 
 /// TokenStream provides an easy way to iterate over the tokenized contents of some tiger source input.
 pub struct TokenStream<R: Read> {
@@ -107,6 +113,8 @@ pub struct TokenStream<R: Read> {
     stream_column: usize,
     stream_line: usize,
     lookahead_buf: VecDeque<char>,
+    finished: bool,
+    cached_token: Option<Token>,
 
     token_column: usize,
     token_line: usize,
@@ -128,7 +136,13 @@ impl<R: Read> TokenStream<R> {
             token_column: 1,
             token_line: 1,
             lookahead_buf: VecDeque::new(),
+            finished: false,
+            cached_token: None,
         };
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.finished && self.cached_token.is_none()
     }
 
     fn next_char(&mut self) -> Option<Result<char, io::Error>> {
@@ -151,19 +165,42 @@ impl<R: Read> TokenStream<R> {
             _ => (),
         }
 
+        if res.is_none() {
+            self.finished = true;
+        }
+
         return res;
+    }
+
+    pub fn peek(&mut self) -> Option<Result<Token, Error>> {
+        let res = self.next_token();
+
+        match &res {
+            Some(Ok(t)) => {
+                self.cached_token = Some(t.clone());
+            }
+            _ => (),
+        }
+
+        res
     }
 
     /// Reads the next token from the stream.
     ///
     /// Returns None when EOF has been reached without errors.
-    pub fn read_token(&mut self) -> Option<Result<Token, Error>> {
+    pub fn next_token(&mut self) -> Option<Result<Token, Error>> {
+        if self.cached_token.is_some() {
+            let res = self.cached_token.take().map(|t| Ok(t));
+            return res;
+        }
+
         loop {
             self.token_column = self.stream_column;
             self.token_line = self.stream_line;
 
             let v = match self.next_char() {
                 None => return None, // EOF
+                Some(Ok('\n')) => self.build_token(TokenValue::Newline, "\n"),
                 Some(Ok(c)) if c.is_whitespace() => continue,
                 Some(Ok(c)) if c == '_' || c.is_alphabetic() => {
                     self.push_char(c);
@@ -189,10 +226,10 @@ impl<R: Read> TokenStream<R> {
                 }
                 Some(Ok(c)) => {
                     return Some(Err(Error {
-                        message: format!(
-                            "unexpected character '{}' at line {} column {}",
-                            c, self.stream_line, self.stream_column
-                        ),
+                        message: format!("unexpected character '{}'", c),
+                        source: self.stream_path.clone(),
+                        column: self.stream_column,
+                        line: self.stream_line,
                         kind: ErrorKind::InvalidInput,
                     }))
                 }
@@ -207,6 +244,7 @@ impl<R: Read> TokenStream<R> {
         Token {
             column: self.token_column,
             line: self.token_line,
+            path: self.stream_path.clone(),
             length: text.len(),
             text: String::from(text),
             value,
@@ -253,6 +291,8 @@ impl<R: Read> TokenStream<R> {
             "var" => Some(self.build_token(TokenValue::KeywordVar, s)),
             "const" => Some(self.build_token(TokenValue::KeywordConst, s)),
             "use" => Some(self.build_token(TokenValue::KeywordUse, s)),
+            "as" => Some(self.build_token(TokenValue::KeywordAs, s)),
+            "return" => Some(self.build_token(TokenValue::KeywordReturn, s)),
             "true" => Some(self.build_token(TokenValue::BoolLiteral(true), s)),
             "false" => Some(self.build_token(TokenValue::BoolLiteral(false), s)),
             _ => None,
@@ -655,32 +695,40 @@ impl<R: Read> TokenStream<R> {
 
     fn internal_error(&self, msg: String) -> Error {
         return Error {
-            message: format!(
-                "{}:{}:{}: {}",
-                self.stream_path, self.stream_line, self.stream_column, msg
-            ),
+            message: msg,
+            line: self.stream_line,
+            column: self.stream_column,
+            source: self.stream_path.clone(),
             kind: ErrorKind::Internal,
         };
     }
 
     fn error(&self, msg: String) -> Error {
         Error {
-            message: format!(
-                "{}:{}:{}: {}",
-                self.stream_path, self.stream_line, self.stream_column, msg
-            ),
+            message: msg,
+            line: self.stream_line,
+            column: self.stream_column,
+            source: self.stream_path.clone(),
             kind: ErrorKind::InvalidInput,
         }
     }
 
     fn io_error(&self, err: io::Error) -> Error {
         Error {
-            message: format!(
-                "{}:{}:{}: I/O error",
-                self.stream_path, self.stream_line, self.stream_column,
-            ),
+            message: "I/O error".into(),
+            line: self.stream_line,
+            column: self.stream_column,
+            source: self.stream_path.clone(),
             kind: ErrorKind::IOError(err),
         }
+    }
+
+    pub fn position(&self) -> (String, usize, usize) {
+        (
+            self.stream_path.clone(),
+            self.stream_line,
+            self.stream_column,
+        )
     }
 }
 
@@ -731,7 +779,7 @@ impl<R: Read> Iterator for TokenStream<R> {
     type Item = Result<Token, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.read_token()
+        self.next_token()
     }
 }
 
