@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{Const, Func, FuncSignature, Symbol, SymbolRef, Type};
+use super::{Const, Func, FuncSignature, Import, Symbol, SymbolRef, Type};
 
 pub struct Module {
     identifier: String,
@@ -9,7 +9,7 @@ pub struct Module {
     constants: HashMap<String, Const>,
     variables: HashMap<String, Type>,
 
-    imports: HashMap<String, FuncSignature>,
+    imports: HashMap<String, Import>,
     exports: HashMap<String, FuncSignature>,
 }
 
@@ -38,7 +38,9 @@ impl Module {
             return Some(SymbolRef::Variable(var));
         }
 
-        // TODO look up imported functions
+        if let Some(import) = self.imports.get(ident) {
+            return Some(SymbolRef::Import(import));
+        }
 
         None
     }
@@ -78,5 +80,26 @@ impl Module {
                 res.map(|c| Symbol::Constant(c))
             }
         }
+    }
+
+    pub fn import(&mut self, ident: String, local_alias: String) -> Result<(), ()> {
+        let local_alias = if local_alias.is_empty() {
+            ident.split(".").last().unwrap_or("").into()
+        } else {
+            local_alias
+        };
+
+        if let Some(_) = self.lookup(&local_alias) {
+            return Err(()); // Already defined
+        }
+
+        let import = Import {
+            ident,
+            local_alias: local_alias.clone(),
+            signature: None,
+        };
+        self.imports.insert(local_alias, import);
+
+        Ok(())
     }
 }
