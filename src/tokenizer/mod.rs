@@ -3,6 +3,9 @@ use std::{
     io::{self, Read},
 };
 
+mod error;
+pub use error::{Error, ErrorKind};
+
 #[derive(Debug, Clone)]
 pub struct Token {
     pub column: usize,
@@ -16,8 +19,6 @@ pub struct Token {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOperator {
     Not,
-    Increment,
-    Decrement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,10 +35,6 @@ pub enum BinaryOperator {
     LogicalAnd,
     ShiftLeft,
     ShiftRight,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ComparisonOperator {
     Equals,
     GreaterThan,
     LessThan,
@@ -64,7 +61,6 @@ pub enum TokenValue {
 
     UnaryOperator(UnaryOperator),
     BinaryOperator(BinaryOperator),
-    Comparison(ComparisonOperator),
     Assignment(AssignOperator),
 
     OpenParen,
@@ -89,21 +85,6 @@ pub enum TokenValue {
     KeywordUse,
     KeywordAs,
     KeywordReturn,
-}
-
-pub enum ErrorKind {
-    InvalidInput,
-    Internal,
-    IOError(io::Error),
-}
-
-pub struct Error {
-    pub message: String,
-    pub kind: ErrorKind,
-
-    pub line: usize,
-    pub column: usize,
-    pub source: String,
 }
 
 /// TokenStream provides an easy way to iterate over the tokenized contents of some tiger source input.
@@ -457,7 +438,7 @@ impl<R: Read> TokenStream<R> {
             None => None,
             Some(Ok(c1)) => {
                 match c1 {
-                    '=' | '*' | '/' | '%' | '^' | '!' => {
+                    '=' | '*' | '/' | '%' | '^' | '!' | '+' | '-' => {
                         // can be c or c=
                         let c2 = match self.next_char() {
                             Some(Ok(v)) => Some(v),
@@ -505,25 +486,6 @@ impl<R: Read> TokenStream<R> {
                             break;
                         }
                         self.build_operator(res.as_str())
-                    }
-                    '+' | '-' => {
-                        // can be c, cc or c=
-                        let c2 = match self.next_char() {
-                            Some(Ok(v)) => Some(v),
-                            Some(Err(e)) => return Some(Err(self.io_error(e))),
-                            None => None,
-                        };
-
-                        match c2 {
-                            Some(c2) if c2 == c1 || c2 == '=' => {
-                                self.build_operator(format!("{}{}", c1, c2).as_str())
-                            }
-                            Some(_) => {
-                                self.push_char(c2.unwrap());
-                                self.build_operator(format!("{}", c1).as_str())
-                            }
-                            None => self.build_operator(format!("{}", c1).as_str()),
-                        }
                     }
                     _ => Some(Err(self.error(format!(
                         "unexpected character '{}' while reading operator token",
@@ -584,39 +546,31 @@ impl<R: Read> TokenStream<R> {
                 op,
             ))),
             "==" => Some(Ok(
-                self.build_token(TokenValue::Comparison(ComparisonOperator::Equals), op)
+                self.build_token(TokenValue::BinaryOperator(BinaryOperator::Equals), op)
             )),
             ">" => Some(Ok(self.build_token(
-                TokenValue::Comparison(ComparisonOperator::GreaterThan),
+                TokenValue::BinaryOperator(BinaryOperator::GreaterThan),
                 op,
             ))),
             "<" => Some(Ok(self.build_token(
-                TokenValue::Comparison(ComparisonOperator::LessThan),
+                TokenValue::BinaryOperator(BinaryOperator::LessThan),
                 op,
             ))),
             ">=" => Some(Ok(self.build_token(
-                TokenValue::Comparison(ComparisonOperator::GreaterThanOrEquals),
+                TokenValue::BinaryOperator(BinaryOperator::GreaterThanOrEquals),
                 op,
             ))),
             "<=" => Some(Ok(self.build_token(
-                TokenValue::Comparison(ComparisonOperator::LessThanOrEquals),
+                TokenValue::BinaryOperator(BinaryOperator::LessThanOrEquals),
                 op,
             ))),
             "!=" => Some(Ok(self.build_token(
-                TokenValue::Comparison(ComparisonOperator::NotEquals),
+                TokenValue::BinaryOperator(BinaryOperator::NotEquals),
                 op,
             ))),
             "!" => Some(Ok(
                 self.build_token(TokenValue::UnaryOperator(UnaryOperator::Not), op)
             )),
-            "++" => Some(Ok(self.build_token(
-                TokenValue::UnaryOperator(UnaryOperator::Increment),
-                op,
-            ))),
-            "--" => Some(Ok(self.build_token(
-                TokenValue::UnaryOperator(UnaryOperator::Decrement),
-                op,
-            ))),
             "=" => Some(Ok(
                 self.build_token(TokenValue::Assignment(AssignOperator::Assign), op)
             )),
@@ -780,6 +734,95 @@ impl<R: Read> Iterator for TokenStream<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_token()
+    }
+}
+
+impl Into<String> for Token {
+    fn into(self) -> String {
+        self.text
+    }
+}
+
+impl std::fmt::Display for TokenValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            TokenValue::Identifier(s) => format!("identifier `{}`", s),
+            TokenValue::IntegerLiteral(x) => format!("integer literal `{}`", x),
+            TokenValue::FloatingPointLiteral(f) => format!("floating point literal `{}`", f),
+            TokenValue::StringLiteral(s) => format!("string literal \"{}\"", s),
+            TokenValue::CharLiteral(c) => format!("character literal '{}'", c),
+            TokenValue::BoolLiteral(b) => format!("boolean literal `{}`", b),
+            TokenValue::UnaryOperator(o) => format!("operator `{}`", o),
+            TokenValue::BinaryOperator(o) => format!("operator `{}`", o),
+            TokenValue::Assignment(o) => format!("operator `{}`", o),
+            TokenValue::OpenParen => "`(`".into(),
+            TokenValue::CloseParen => "`)`".into(),
+            TokenValue::OpenBrace => "`{`".into(),
+            TokenValue::CloseBrace => "`}`".into(),
+            TokenValue::OpenBracket => "`[`".into(),
+            TokenValue::CloseBracket => "`]`".into(),
+            TokenValue::Dot => "`.`".into(),
+            TokenValue::Comma => "`,`".into(),
+            TokenValue::Newline => "newline".into(),
+            TokenValue::KeywordFunc => "keyword `func`".into(),
+            TokenValue::KeywordTest => "keyword `test`".into(),
+            TokenValue::KeywordIf => "keyword `if`".into(),
+            TokenValue::KeywordElse => "keyword `else`".into(),
+            TokenValue::KeywordFor => "keyword `for`".into(),
+            TokenValue::KeywordLoop => "keyword `loop`".into(),
+            TokenValue::KeywordWhile => "keyword `while`".into(),
+            TokenValue::KeywordVar => "keyword `var`".into(),
+            TokenValue::KeywordConst => "keyword `const`".into(),
+            TokenValue::KeywordUse => "keyword `use`".into(),
+            TokenValue::KeywordAs => "keyword `as`".into(),
+            TokenValue::KeywordReturn => "keyword `return`".into(),
+        };
+        f.write_str(&s)
+    }
+}
+
+impl std::fmt::Display for UnaryOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            UnaryOperator::Not => "!".into(),
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::fmt::Display for BinaryOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            BinaryOperator::Add => "+",
+            BinaryOperator::Subtract => "-",
+            BinaryOperator::Multiply => "*",
+            BinaryOperator::Divide => "/",
+            BinaryOperator::Modulo => "%",
+            BinaryOperator::BinaryOr => "|",
+            BinaryOperator::BinaryAnd => "&",
+            BinaryOperator::Xor => "^",
+            BinaryOperator::LogicalOr => "||",
+            BinaryOperator::LogicalAnd => "&&",
+            BinaryOperator::ShiftLeft => "<<",
+            BinaryOperator::ShiftRight => ">>",
+            BinaryOperator::Equals => "==",
+            BinaryOperator::GreaterThan => ">",
+            BinaryOperator::LessThan => "<",
+            BinaryOperator::GreaterThanOrEquals => ">=",
+            BinaryOperator::LessThanOrEquals => "<=",
+            BinaryOperator::NotEquals => "!=",
+        };
+        f.write_str(s)
+    }
+}
+
+impl std::fmt::Display for AssignOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            AssignOperator::AssignAfter(b) => format!("{}=", b),
+            AssignOperator::Assign => "=".into(),
+        };
+        f.write_str(&s)
     }
 }
 

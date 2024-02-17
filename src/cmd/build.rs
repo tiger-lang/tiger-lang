@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use crate::tokenizer;
+use crate::parser;
 
 use super::CommandOpts;
 
@@ -15,17 +15,12 @@ fn run_internal(opts: &CommandOpts) -> io::Result<()> {
             println!("{}", path);
 
             let file = File::open(entry.path())?;
-            let tok = tokenizer::TokenStream::new(file, Some(path));
-
-            for token in tok {
-                match token {
-                    Ok(t) => println!("\t{:?}", t),
-                    Err(err) => {
-                        println!("\t{}", err.message);
-                        return Ok(());
-                    }
-                }
-            }
+            let module_name = entry.file_name().to_string_lossy().to_string();
+            let mut parser = parser::Parser::new(module_name);
+	    let res = parser.add_source(file, Some(path.clone()));
+	    if let Err(e) = res {
+		println!("Failed to process {}: {}", path, e);
+	    }
         }
     }
 

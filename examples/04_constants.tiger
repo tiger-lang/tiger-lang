@@ -1,0 +1,15 @@
+use (
+	io.print_line
+)
+
+const (
+      x text = "123"
+      y bool = false
+      z int = 1
+)
+
+func main() {
+	print_line(x)
+	print_line(y)
+	print_line(z)
+}

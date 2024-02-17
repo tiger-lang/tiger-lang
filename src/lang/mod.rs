@@ -24,9 +24,10 @@ pub enum SymbolRef<'a> {
 }
 
 pub struct Import {
-    ident: String,
-    local_alias: String,
-    signature: Option<FuncSignature>,
+    pub ident: String,
+    pub local_alias: String,
+    pub signature: Option<FuncSignature>,
+    first_token: Token,
 }
 
 pub struct Type {}
@@ -45,7 +46,15 @@ pub struct FuncSignature {
     first_token: Token,
 }
 
-pub struct Statement {}
+pub struct Statement {
+    value: StatementValue,
+    first_token: Token,
+}
+
+pub enum StatementValue {}
+
+mod expression;
+pub use expression::{Expression, ExpressionValue};
 
 pub struct Const {
     ttype: Type,

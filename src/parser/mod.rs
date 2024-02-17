@@ -1,50 +1,14 @@
 use crate::{
-    lang::Module,
-    tokenizer::{self, Token, TokenStream},
+    lang::{Import, Module},
+    tokenizer::{self, Token, TokenStream, TokenValue},
 };
 use std::io::Read;
 
+mod error;
+pub use error::{Error, ErrorKind};
+
 pub struct Parser {
     module: Module,
-}
-
-pub struct Error {
-    pub message: String,
-    pub kind: ErrorKind,
-
-    pub line: usize,
-    pub column: usize,
-    pub source: String,
-}
-
-impl Error {
-    fn new<R: Read>(ts: &TokenStream<R>, kind: ErrorKind, message: String) -> Self {
-        let (path, line, col) = ts.position();
-        Self {
-            message: message,
-            kind: kind,
-            line: line,
-            column: col,
-            source: path,
-        }
-    }
-
-    fn unexpected_token(t: Token, message: Option<String>) -> Self {
-        Self {
-            message: message.unwrap_or(String::new()),
-            line: t.line,
-            column: t.column,
-            source: t.path.clone(),
-            kind: ErrorKind::UnexpectedToken(t),
-        }
-    }
-}
-
-pub enum ErrorKind {
-    Nop,
-    TokenizerError(tokenizer::Error),
-    UnexpectedToken(Token),
-    UnexpectedEOF,
 }
 
 impl Parser {
@@ -69,69 +33,256 @@ impl Parser {
     }
 
     pub fn finalize(self) -> Result<Module, Error> {
-        todo!()
+        Ok(self.module)
+    }
+
+    fn complete_import<R: Read>(
+        &mut self,
+        token_stream: &mut TokenStream<R>,
+        current_parts: &mut Vec<Token>,
+        alias: &str,
+    ) -> Result<(), Error> {
+        let import = current_parts
+            .iter()
+            .map(|t| t.text.clone())
+            .collect::<Vec<String>>()
+            .join("");
+        if import.ends_with(".") || import.starts_with(".") {
+            return Err(Error::new(
+                token_stream,
+                ErrorKind::InvalidImport(import),
+                "import cannot start or end with '.'".into(),
+            ));
+        }
+        if import.is_empty() {
+            return Err(Error::new(
+                token_stream,
+                ErrorKind::InvalidImport(import),
+                "empty import".into(),
+            ));
+        }
+        let first_token = current_parts[0].clone();
+        current_parts.clear();
+
+        let import = Import::new(import, alias.into(), first_token);
+        let ident = import.local_alias.clone();
+
+        self.module
+            .import(import)
+            .map_err(|_| Error::redefined_symbol(token_stream, &ident))?;
+        Ok(())
     }
 
     fn maybe_parse_use_block<R: Read>(
-        &self,
+        &mut self,
         token_stream: &mut TokenStream<R>,
     ) -> Result<(), Error> {
-        if let Some(t) = token_stream.peek() {
-            match t {
-                Ok(t) => match t.value {
-                    tokenizer::TokenValue::KeywordUse => (),
-                    tokenizer::TokenValue::KeywordFunc
-                    | tokenizer::TokenValue::KeywordTest
-                    | tokenizer::TokenValue::KeywordVar
-                    | tokenizer::TokenValue::KeywordConst => return Ok(()), // no use block present
-                    _ => return Err(Error::unexpected_token(t, None)),
-                },
-                Err(e) => return Err(e.into()),
-            }
-        } else {
-            return Ok(()); // EOF
+        if scan_for_keyword(
+            token_stream,
+            TokenValue::KeywordUse,
+            vec![
+                TokenValue::KeywordConst,
+                TokenValue::KeywordFunc,
+                TokenValue::KeywordTest,
+                TokenValue::KeywordConst,
+            ],
+        )? == false
+        {
+            return Ok(());
         }
+        skip_while(token_stream, is_newline)?;
 
-        _ = token_stream.next_token(); // consume peeked use keyword
-
-        match token_stream.next_token() {
-            Some(Ok(t)) => {
-                if t.value != tokenizer::TokenValue::OpenParen {
-                    return Err(Error::unexpected_token(t, None));
-                }
-            }
-            Some(Err(e)) => return Err(e.into()),
-            None => {
-                return Err(Error::new(
-                    token_stream,
-                    ErrorKind::UnexpectedEOF,
-                    "while parsing use block".into(),
-                ))
-            }
-        }
+        consume_token(
+            token_stream,
+            |t| t.value == TokenValue::OpenParen,
+            "use keyword should be followed by a `(`".into(),
+        )?;
 
         // Read sequence of x.y.z as w <newline> until ')'
+        let mut current_parts = vec![];
 
-        todo!()
+        while let Some(t) = token_stream.next_token() {
+            let t = t?;
+            match t.value {
+                TokenValue::CloseParen => {
+                    if !current_parts.is_empty() {
+                        self.complete_import(token_stream, &mut current_parts, "")?;
+                    }
+                    return Ok(());
+                }
+                TokenValue::KeywordAs => {
+                    let alias = consume_token(
+                        token_stream,
+                        is_identifier,
+                        "while parsing import alias".into(),
+                    )?;
+                    self.complete_import(token_stream, &mut current_parts, &alias.text)?;
+                    ensure_next_token(
+                        token_stream,
+                        |t| match t.value {
+                            TokenValue::Comma | TokenValue::Newline => true,
+                            _ => false,
+                        },
+                        "while parsing import alias".into(),
+                    )?;
+                }
+                TokenValue::Newline => {
+                    if !current_parts.is_empty() {
+                        self.complete_import(token_stream, &mut current_parts, "")?;
+                    }
+                }
+                TokenValue::Comma => self.complete_import(token_stream, &mut current_parts, "")?,
+                TokenValue::Identifier(_) | TokenValue::Dot => current_parts.push(t),
+                _ => {
+                    return Err(Error::unexpected_token(
+                        t,
+                        "while parsing `use` block".into(),
+                    ))
+                }
+            }
+        }
+
+        return Err(Error::new(
+            token_stream,
+            ErrorKind::UnexpectedEOF,
+            "missing ')' after 'use' block".into(),
+        ));
     }
 
     fn maybe_parse_const_block<R: Read>(
-        &self,
+        &mut self,
         token_stream: &mut TokenStream<R>,
     ) -> Result<(), Error> {
+        if scan_for_keyword(
+            token_stream,
+            TokenValue::KeywordConst,
+            vec![
+                TokenValue::KeywordFunc,
+                TokenValue::KeywordTest,
+                TokenValue::KeywordConst,
+            ],
+        )? == false
+        {
+            return Ok(()); // No const block
+        }
+
+        skip_while(token_stream, is_newline)?;
+
+        consume_token(
+            token_stream,
+            |t| t.value == TokenValue::OpenParen,
+            "use keyword should be followed by a `(`".into(),
+        )?;
         todo!()
     }
 
     fn maybe_parse_var_block<R: Read>(
-        &self,
+        &mut self,
         token_stream: &mut TokenStream<R>,
     ) -> Result<(), Error> {
         todo!()
     }
 
-    fn maybe_parse_func<R: Read>(&self, token_stream: &mut TokenStream<R>) -> Result<(), Error> {
+    fn maybe_parse_func<R: Read>(
+        &mut self,
+        token_stream: &mut TokenStream<R>,
+    ) -> Result<(), Error> {
         todo!()
     }
+}
+
+fn is_identifier(t: &Token) -> bool {
+    if let TokenValue::Identifier(_) = t.value {
+        true
+    } else {
+        false
+    }
+}
+
+fn is_newline(t: &Token) -> bool {
+    match t.value {
+        TokenValue::Newline => true,
+        _ => false,
+    }
+}
+
+fn ensure_next_token<R: Read, F>(
+    token_stream: &mut TokenStream<R>,
+    matcher: F,
+    error_message: String,
+) -> Result<(), Error>
+where
+    F: Fn(&Token) -> bool,
+{
+    if let Some(t) = token_stream.peek() {
+        let t = t?;
+        if matcher(&t) {
+            Ok(())
+        } else {
+            Err(Error::unexpected_token(t, error_message))
+        }
+    } else {
+        Err(Error::new(
+            token_stream,
+            ErrorKind::UnexpectedEOF,
+            error_message,
+        ))
+    }
+}
+
+fn consume_token<R: Read, F>(
+    token_stream: &mut TokenStream<R>,
+    matcher: F,
+    error_message: String,
+) -> Result<Token, Error>
+where
+    F: Fn(&Token) -> bool,
+{
+    if let Some(t) = token_stream.next_token() {
+        let t = t?;
+
+        if matcher(&t) {
+            return Ok(t);
+        } else {
+            return Err(Error::unexpected_token(t, error_message));
+        }
+    } else {
+        return Err(Error::new(
+            token_stream,
+            ErrorKind::UnexpectedEOF,
+            "".into(),
+        ));
+    }
+}
+
+fn scan_for_keyword<R: Read>(
+    token_stream: &mut TokenStream<R>,
+    keyword: TokenValue,
+    non_error_keywords: Vec<TokenValue>,
+) -> Result<bool, Error> {
+    skip_while(token_stream, is_newline)?;
+
+    if let Some(t) = token_stream.peek() {
+        let t = t?;
+        if t.value == keyword {
+            _ = token_stream.next_token();
+            return Ok(true);
+        }
+        if non_error_keywords.contains(&t.value) {}
+        return Err(Error::unexpected_token(
+            t,
+            format!("while looking for `{}` block", keyword),
+        ));
+    } else {
+        return Ok(false); // EOF
+    }
+}
+
+fn skip_while<R: Read, F>(token_stream: &mut TokenStream<R>, matcher: F) -> Result<(), Error>
+where
+    F: Fn(&Token) -> bool,
+{
+    skip_until(token_stream, |t| !matcher(t))
 }
 
 fn skip_until<R: Read, F>(token_stream: &mut TokenStream<R>, matcher: F) -> Result<(), Error>
@@ -140,15 +291,11 @@ where
 {
     while !token_stream.is_empty() {
         if let Some(t) = token_stream.peek() {
-            match t {
-                Ok(t) => {
-                    if matcher(&t) {
-                        return Ok(());
-                    }
-                    _ = token_stream.next_token()
-                }
-                Err(e) => return Err(e.into()),
+            let t = t?;
+            if matcher(&t) {
+                return Ok(());
             }
+            _ = token_stream.next_token()
         }
     }
 

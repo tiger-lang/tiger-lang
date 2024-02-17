@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::tokenizer::Token;
+
 use super::{Const, Func, FuncSignature, Import, Symbol, SymbolRef, Type};
 
 pub struct Module {
@@ -82,24 +84,29 @@ impl Module {
         }
     }
 
-    pub fn import(&mut self, ident: String, local_alias: String) -> Result<(), ()> {
+    pub fn import(&mut self, import: Import) -> Result<(), ()> {
+        if let Some(_) = self.lookup(&import.local_alias) {
+            return Err(()); // Already defined
+        }
+
+        self.imports.insert(import.local_alias.clone(), import);
+
+        Ok(())
+    }
+}
+
+impl Import {
+    pub fn new(ident: String, local_alias: String, first_token: Token) -> Self {
         let local_alias = if local_alias.is_empty() {
             ident.split(".").last().unwrap_or("").into()
         } else {
             local_alias
         };
-
-        if let Some(_) = self.lookup(&local_alias) {
-            return Err(()); // Already defined
-        }
-
-        let import = Import {
+        Import {
             ident,
-            local_alias: local_alias.clone(),
+            local_alias,
             signature: None,
-        };
-        self.imports.insert(local_alias, import);
-
-        Ok(())
+            first_token,
+        }
     }
 }
