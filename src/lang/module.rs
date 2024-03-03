@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 
-use crate::tokenizer::Token;
-
-use super::{Const, Func, FuncSignature, Import, Symbol, SymbolRef, Type};
+use super::{Const, Func, FuncSignature, Import, StructType, Symbol, SymbolRef, Variable};
 
 pub struct Module {
     identifier: String,
 
     functions: HashMap<String, Func>,
     constants: HashMap<String, Const>,
-    variables: HashMap<String, Type>,
+    variables: HashMap<String, Variable>,
+    types: HashMap<String, StructType>,
 
     imports: HashMap<String, Import>,
     exports: HashMap<String, FuncSignature>,
@@ -22,6 +21,7 @@ impl Module {
             constants: HashMap::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
+            types: HashMap::new(),
             imports: HashMap::new(),
             exports: HashMap::new(),
         }
@@ -40,8 +40,36 @@ impl Module {
             return Some(SymbolRef::Variable(var));
         }
 
+        if let Some(ttype) = self.types.get(ident) {
+            return Some(SymbolRef::Type(ttype));
+        }
+
         if let Some(import) = self.imports.get(ident) {
             return Some(SymbolRef::Import(import));
+        }
+
+        None
+    }
+
+    pub fn undefine(&mut self, ident: &str) -> Option<Symbol> {
+        if let Some(func) = self.functions.remove(ident) {
+            return Some(Symbol::Function(func));
+        }
+
+        if let Some(cst) = self.constants.remove(ident) {
+            return Some(Symbol::Constant(cst));
+        }
+
+        if let Some(var) = self.variables.remove(ident) {
+            return Some(Symbol::Variable(var));
+        }
+
+        if let Some(ttype) = self.types.remove(ident) {
+            return Some(Symbol::Type(ttype));
+        }
+
+        if let Some(import) = self.imports.remove(ident) {
+            return Some(Symbol::Import(import));
         }
 
         None
@@ -62,51 +90,20 @@ impl Module {
             Symbol::Constant(c) => {
                 self.constants.insert(ident, c);
             }
+            Symbol::Type(t) => {
+                self.types.insert(ident, t);
+            }
+            Symbol::Import(i) => {
+                self.imports.insert(ident, i);
+            }
         }
 
         Ok(())
     }
 
     pub fn redefine(&mut self, ident: String, symb: Symbol) -> Option<Symbol> {
-        match symb {
-            Symbol::Function(f) => {
-                let res = self.functions.insert(ident, f);
-                res.map(|f| Symbol::Function(f))
-            }
-            Symbol::Variable(v) => {
-                let res = self.variables.insert(ident, v);
-                res.map(|v| Symbol::Variable(v))
-            }
-            Symbol::Constant(c) => {
-                let res = self.constants.insert(ident, c);
-                res.map(|c| Symbol::Constant(c))
-            }
-        }
-    }
-
-    pub fn import(&mut self, import: Import) -> Result<(), ()> {
-        if let Some(_) = self.lookup(&import.local_alias) {
-            return Err(()); // Already defined
-        }
-
-        self.imports.insert(import.local_alias.clone(), import);
-
-        Ok(())
-    }
-}
-
-impl Import {
-    pub fn new(ident: String, local_alias: String, first_token: Token) -> Self {
-        let local_alias = if local_alias.is_empty() {
-            ident.split(".").last().unwrap_or("").into()
-        } else {
-            local_alias
-        };
-        Import {
-            ident,
-            local_alias,
-            signature: None,
-            first_token,
-        }
+        let res = self.undefine(&ident).map(|s| s);
+        self.define(ident, symb);
+        res
     }
 }

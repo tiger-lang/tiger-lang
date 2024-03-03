@@ -1,13 +1,13 @@
-use (
+use {
 	io.print_line
-)
+}
 
 func main() {
-	var (
+	var {
 		x text = "123"
 		y bool = false
 		z int = 1
-	)
+	}
 
 	print_line(x)
 	print_line(y)

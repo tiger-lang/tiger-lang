@@ -19,6 +19,8 @@ pub struct Token {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOperator {
     Not,
+    Minus,
+    Plus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +77,7 @@ pub enum TokenValue {
 
     KeywordFunc,
     KeywordTest,
+    KeywordStruct,
     KeywordIf,
     KeywordElse,
     KeywordFor,
@@ -102,7 +105,7 @@ pub struct TokenStream<R: Read> {
 }
 
 impl<R: Read> TokenStream<R> {
-    /// Create a new TokenStream from a reader and an optional source path
+    /// Create a new TokenStream from a reader and an optional source path.
     pub fn new(r: R, path: Option<String>) -> Self {
         let path = if let Some(p) = path {
             p
@@ -122,6 +125,7 @@ impl<R: Read> TokenStream<R> {
         };
     }
 
+    /// Returns true if all tokens from the stream have been consumed.
     pub fn is_empty(&self) -> bool {
         self.finished && self.cached_token.is_none()
     }
@@ -153,6 +157,8 @@ impl<R: Read> TokenStream<R> {
         return res;
     }
 
+    /// Read a copy of the next token in the stream without consuming it.
+    /// Returns None when all tokens from the stream have been consumed.
     pub fn peek(&mut self) -> Option<Result<Token, Error>> {
         let res = self.next_token();
 
@@ -269,6 +275,7 @@ impl<R: Read> TokenStream<R> {
             "while" => Some(self.build_token(TokenValue::KeywordWhile, s)),
             "func" => Some(self.build_token(TokenValue::KeywordFunc, s)),
             "test" => Some(self.build_token(TokenValue::KeywordTest, s)),
+            "struct" => Some(self.build_token(TokenValue::KeywordStruct, s)),
             "var" => Some(self.build_token(TokenValue::KeywordVar, s)),
             "const" => Some(self.build_token(TokenValue::KeywordConst, s)),
             "use" => Some(self.build_token(TokenValue::KeywordUse, s)),
@@ -766,6 +773,7 @@ impl std::fmt::Display for TokenValue {
             TokenValue::Newline => "newline".into(),
             TokenValue::KeywordFunc => "keyword `func`".into(),
             TokenValue::KeywordTest => "keyword `test`".into(),
+            TokenValue::KeywordStruct => "keyword `struct`".into(),
             TokenValue::KeywordIf => "keyword `if`".into(),
             TokenValue::KeywordElse => "keyword `else`".into(),
             TokenValue::KeywordFor => "keyword `for`".into(),
@@ -785,6 +793,8 @@ impl std::fmt::Display for UnaryOperator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             UnaryOperator::Not => "!".into(),
+            UnaryOperator::Minus => "-".into(),
+            UnaryOperator::Plus => "+".into(),
         };
         f.write_str(s)
     }

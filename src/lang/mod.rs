@@ -2,35 +2,61 @@ use std::collections::HashMap;
 
 mod assembly;
 mod module;
+mod symbol;
+mod ttype;
 
 pub use assembly::Assembly;
 pub use module::Module;
 
 use crate::tokenizer::Token;
 
-pub struct Value {}
-
 pub enum Symbol {
     Function(Func),
-    Variable(Type),
+    Variable(Variable),
     Constant(Const),
+    Type(StructType),
+    Import(Import),
 }
 
 pub enum SymbolRef<'a> {
     Function(&'a Func),
-    Variable(&'a Type),
+    Variable(&'a Variable),
     Constant(&'a Const),
     Import(&'a Import),
+    Type(&'a StructType),
 }
 
 pub struct Import {
-    pub ident: String,
-    pub local_alias: String,
+    pub path: String,
     pub signature: Option<FuncSignature>,
     first_token: Token,
 }
 
-pub struct Type {}
+pub enum Type {
+    Text,
+    Character,
+    Bool,
+    Int,
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    UInt,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    Float,
+    Float32,
+    Float64,
+    Struct(String), // Value is the name of the struct type
+}
+
+pub struct StructType {
+    ident: String,
+    first_token: Token,
+    fields: Vec<(String, Type)>,
+}
 
 pub struct Func {
     signature: FuncSignature,
@@ -54,10 +80,16 @@ pub struct Statement {
 pub enum StatementValue {}
 
 mod expression;
-pub use expression::{Expression, ExpressionValue};
+pub use expression::{Expression, ExpressionValue, Identifier};
 
 pub struct Const {
     ttype: Type,
-    value: Value,
+    value: Expression,
+    first_token: Token,
+}
+
+pub struct Variable {
+    ttype: Type,
+    initial_value: Expression,
     first_token: Token,
 }
