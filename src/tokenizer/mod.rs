@@ -87,6 +87,7 @@ pub enum TokenValue {
     KeywordConst,
     KeywordUse,
     KeywordAs,
+    KeywordIn,
     KeywordReturn,
 }
 
@@ -280,6 +281,7 @@ impl<R: Read> TokenStream<R> {
             "const" => Some(self.build_token(TokenValue::KeywordConst, s)),
             "use" => Some(self.build_token(TokenValue::KeywordUse, s)),
             "as" => Some(self.build_token(TokenValue::KeywordAs, s)),
+            "in" => Some(self.build_token(TokenValue::KeywordIn, s)),
             "return" => Some(self.build_token(TokenValue::KeywordReturn, s)),
             "true" => Some(self.build_token(TokenValue::BoolLiteral(true), s)),
             "false" => Some(self.build_token(TokenValue::BoolLiteral(false), s)),
@@ -783,6 +785,7 @@ impl std::fmt::Display for TokenValue {
             TokenValue::KeywordConst => "keyword `const`".into(),
             TokenValue::KeywordUse => "keyword `use`".into(),
             TokenValue::KeywordAs => "keyword `as`".into(),
+            TokenValue::KeywordIn => "keyword `in`".into(),
             TokenValue::KeywordReturn => "keyword `return`".into(),
         };
         f.write_str(&s)

@@ -320,9 +320,22 @@ where
 
 struct Declaration {
     identifier: String,
-    ttype: String,
+    ttype: Type,
     value: Expression,
     first_token: Token,
+}
+
+fn parse_type<R: Read>(token_stream: &mut TokenStream<R>) -> Result<Type> {
+    // TODO: list types
+    let ttype = consume_token(
+        token_stream,
+        token_matcher::identifier,
+        "expected type definition".into(),
+    )?;
+    match ttype.value {
+        TokenValue::Identifier(s) => Ok(s.into()),
+        _ => unreachable!(),
+    }
 }
 
 /// parse_declaration_block parses the "body" of a var or const block, including the opening and closing brace.
@@ -332,7 +345,7 @@ fn parse_declaration_block<R: Read>(token_stream: &mut TokenStream<R>) -> Result
     consume_token(
         token_stream,
         |t| t.value == TokenValue::OpenBrace,
-        "use keyword should be followed by a `{`".into(),
+        "const and var blocks should start with a `{`".into(),
     )?;
 
     let mut res = vec![];
@@ -347,11 +360,7 @@ fn parse_declaration_block<R: Read>(token_stream: &mut TokenStream<R>) -> Result
             "expected identifier or `}`".into(),
         )?;
 
-        let ttype = consume_token(
-            token_stream,
-            token_matcher::identifier,
-            "expected identifier or `}`".into(),
-        )?;
+        let ttype = parse_type(token_stream)?;
 
         consume_token(
             token_stream,
@@ -367,10 +376,7 @@ fn parse_declaration_block<R: Read>(token_stream: &mut TokenStream<R>) -> Result
                 TokenValue::Identifier(ref s) => s.into(),
                 _ => unreachable!(),
             },
-            ttype: match ttype.value {
-                TokenValue::Identifier(s) => s,
-                _ => unreachable!(),
-            },
+            ttype,
             value,
             first_token: ident,
         });

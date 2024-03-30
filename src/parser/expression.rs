@@ -230,3 +230,7 @@ where
 
     Ok(Expression::identifier(words, first_token))
 }
+
+fn test() {
+    let function_call = parse!(func: identifier);
+}
